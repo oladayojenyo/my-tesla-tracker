@@ -54,7 +54,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TrackerError(RuntimeError):
-    """Raised when the tracker cannot complete successfully."""
+    pass
 
 
 def get_required_environment_variable(name: str) -> str:
@@ -91,9 +91,7 @@ def create_session() -> requests.Session:
 
 def parse_integer(value: Any, field_name: str) -> int:
     if isinstance(value, bool):
-        raise ValueError(
-            f"{field_name} cannot be a boolean."
-        )
+        raise ValueError(f"{field_name} cannot be a boolean.")
 
     if isinstance(value, int):
         return value
@@ -144,8 +142,7 @@ def fetch_inventory(
 
         raise TrackerError(
             "Tesla inventory request failed. "
-            f"Details: {exc}. "
-            f"Response: {response_body}"
+            f"Details: {exc}. Response: {response_body}"
         ) from exc
 
     try:
@@ -188,19 +185,9 @@ def find_matching_vehicles(
 
     for vehicle in vehicles:
         try:
-            year = parse_integer(
-                vehicle.get("Year"),
-                "Year",
-            )
-
-            price = parse_integer(
-                vehicle.get("Price"),
-                "Price",
-            )
-
-            vin = str(
-                vehicle.get("VIN", "")
-            ).strip()
+            year = parse_integer(vehicle.get("Year"), "Year")
+            price = parse_integer(vehicle.get("Price"), "Price")
+            vin = str(vehicle.get("VIN", "")).strip()
 
         except (TypeError, ValueError) as exc:
             LOGGER.warning(
@@ -210,9 +197,7 @@ def find_matching_vehicles(
             continue
 
         if not vin:
-            LOGGER.warning(
-                "Skipping vehicle because VIN is missing."
-            )
+            LOGGER.warning("Skipping vehicle because VIN is missing.")
             continue
 
         if year == TARGET_YEAR and price <= MAX_PRICE_GBP:
@@ -244,9 +229,7 @@ def build_vehicle_url(vin: str) -> str:
 def build_telegram_message(
     vehicle: dict[str, Any],
 ) -> str:
-    vehicle_url = build_vehicle_url(
-        vehicle["vin"]
-    )
+    vehicle_url = build_vehicle_url(vehicle["vin"])
 
     return (
         "🚨 *Tesla Inventory Alert*\n\n"
@@ -264,11 +247,10 @@ def send_telegram_message(
     message: str,
 ) -> None:
     telegram_url = (
-        f"https://api.telegram.org/"
-        f"bot{bot_token}/sendMessage"
+        f"https://api.telegram.org/bot{bot_token}/sendMessage"
     )
 
-    telegram_payload = {
+    payload = {
         "chat_id": chat_id,
         "text": message,
         "parse_mode": "Markdown",
@@ -278,7 +260,7 @@ def send_telegram_message(
     try:
         response = session.post(
             telegram_url,
-            json=telegram_payload,
+            json=payload,
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
 
@@ -297,63 +279,44 @@ def send_telegram_message(
 
         raise TrackerError(
             "Telegram notification failed. "
-            f"Details: {exc}. "
-            f"Response: {response_body}"
+            f"Details: {exc}. Response: {response_body}"
         ) from exc
 
-    try:
-        telegram_result = response.json()
-    except requests.JSONDecodeError as exc:
-        raise TrackerError(
-            "Telegram returned invalid JSON."
-        ) from exc
+    result = response.json()
 
-    if not telegram_result.get("ok"):
+    if not result.get("ok"):
         raise TrackerError(
-            "Telegram rejected the message: "
-            f"{telegram_result}"
+            f"Telegram rejected the message: {result}"
         )
 
 
 def main() -> int:
     try:
-        telegram_bot_token = (
-            get_required_environment_variable(
-                "TELEGRAM_BOT_TOKEN"
-            )
+        bot_token = get_required_environment_variable(
+            "TELEGRAM_BOT_TOKEN"
         )
 
-        telegram_chat_id = (
-            get_required_environment_variable(
-                "TELEGRAM_CHAT_ID"
-            )
+        chat_id = get_required_environment_variable(
+            "TELEGRAM_CHAT_ID"
         )
 
         session = create_session()
-
         inventory = fetch_inventory(session)
+        matches = find_matching_vehicles(inventory)
 
-        matching_vehicles = find_matching_vehicles(
-            inventory
-        )
-
-        if not matching_vehicles:
+        if not matches:
             LOGGER.info(
                 "No qualifying vehicles found. "
-                "No Telegram message sent."
+                "No Telegram notification sent."
             )
             return 0
 
-        for vehicle in matching_vehicles:
-            message = build_telegram_message(
-                vehicle
-            )
-
+        for vehicle in matches:
             send_telegram_message(
                 session=session,
-                bot_token=telegram_bot_token,
-                chat_id=telegram_chat_id,
-                message=message,
+                bot_token=bot_token,
+                chat_id=chat_id,
+                message=build_telegram_message(vehicle),
             )
 
             LOGGER.info(
@@ -368,9 +331,7 @@ def main() -> int:
         return 1
 
     except Exception:
-        LOGGER.exception(
-            "Unexpected tracker error."
-        )
+        LOGGER.exception("Unexpected tracker error.")
         return 1
 
 

@@ -37,5 +37,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install requests==2.32.4
 
+      - name: Validate Python syntax
+        run: python -m py_compile tracker.py
+
       - name: Run Tesla inventory tracker
         run: python tracker.py

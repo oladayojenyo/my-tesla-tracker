@@ -63,15 +63,24 @@ class Settings:
             if keyword.strip()
         )
 
+        def _int_env(name: str, default: str) -> int:
+            raw = os.getenv(name, default)
+            try:
+                return int(raw)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Environment variable {name}={raw!r} must be an integer"
+                ) from exc
+
         return cls(
             telegram_bot_token=token,
             telegram_chat_id=chat_id,
-            min_year=int(os.getenv("TESLA_MIN_YEAR", "2024")),
-            max_price=int(os.getenv("TESLA_MAX_PRICE", "28000")),
+            min_year=_int_env("TESLA_MIN_YEAR", "2024"),
+            max_price=_int_env("TESLA_MAX_PRICE", "28000"),
             trim_keywords=trim_keywords,
-            page_size=int(os.getenv("TESLA_PAGE_SIZE", "50")),
-            max_pages=int(os.getenv("TESLA_MAX_PAGES", "10")),
-            timeout_seconds=int(os.getenv("HTTP_TIMEOUT_SECONDS", "20")),
+            page_size=_int_env("TESLA_PAGE_SIZE", "50"),
+            max_pages=_int_env("TESLA_MAX_PAGES", "10"),
+            timeout_seconds=_int_env("HTTP_TIMEOUT_SECONDS", "20"),
         )
 
 
@@ -89,7 +98,7 @@ class Vehicle:
 
 @dataclass(frozen=True)
 class Alert:
-    kind: str
+    kind: str  # "new", "relisted", or "price_drop"
     vehicle: Vehicle
     previous_price: int | None = None
 
@@ -305,11 +314,25 @@ def load_state(path: Path = STATE_FILE) -> dict[str, dict[str, Any]]:
 def find_alerts(
     vehicles: list[Vehicle], previous_state: dict[str, dict[str, Any]]
 ) -> list[Alert]:
+    """Work out which vehicles deserve a Telegram alert.
+
+    A vehicle is alert-worthy if:
+      - it has never been seen before ("new"); or
+      - it was seen before but was marked inactive (delisted) and has now
+        reappeared in inventory ("relisted"); or
+      - it is currently active and its price has dropped since the last
+        run ("price_drop").
+    """
     alerts: list[Alert] = []
     for vehicle in vehicles:
         previous = previous_state.get(vehicle.vin)
+
         if previous is None:
             alerts.append(Alert(kind="new", vehicle=vehicle))
+            continue
+
+        if previous.get("active") is False:
+            alerts.append(Alert(kind="relisted", vehicle=vehicle))
             continue
 
         previous_price = parse_int(previous.get("price"))
@@ -360,6 +383,9 @@ def format_alert(alert: Alert) -> str:
             f"Price: <s>£{alert.previous_price:,}</s> → "
             f"<b>£{vehicle.price:,}</b>"
         )
+    elif alert.kind == "relisted":
+        heading = "TESLA RELISTED"
+        price_line = f"Price: <b>£{vehicle.price:,}</b>"
     else:
         heading = "NEW TESLA MATCH"
         price_line = f"Price: <b>£{vehicle.price:,}</b>"
@@ -413,6 +439,31 @@ def send_telegram_alert(
         raise RuntimeError(f"Telegram rejected the alert: {result}")
 
 
+def send_alerts(
+    alerts: list[Alert],
+    settings: Settings,
+    session: requests.Session,
+) -> int:
+    """Send every alert, tolerating individual failures.
+
+    Returns the number of alerts that failed to send. A single bad send
+    (rate limit, network blip, bad chat id) must never prevent the other
+    alerts from going out, and must never prevent state from being saved
+    afterwards.
+    """
+    failures = 0
+    for alert in alerts:
+        try:
+            send_telegram_alert(alert, settings, session=session)
+            LOGGER.info("Sent %s alert for VIN %s", alert.kind, alert.vehicle.vin)
+        except Exception:
+            failures += 1
+            LOGGER.exception(
+                "Failed to send %s alert for VIN %s", alert.kind, alert.vehicle.vin
+            )
+    return failures
+
+
 def main() -> int:
     settings = Settings.from_environment()
     session = build_session()
@@ -427,11 +478,18 @@ def main() -> int:
         len(alerts),
     )
 
-    for alert in alerts:
-        send_telegram_alert(alert, settings, session=session)
-        LOGGER.info("Sent %s alert for VIN %s", alert.kind, alert.vehicle.vin)
+    failures = 0
+    try:
+        failures = send_alerts(alerts, settings, session)
+    finally:
+        # State must be persisted even if some (or all) alert sends failed,
+        # otherwise the next run will re-detect the same vehicles as new.
+        save_state(vehicles, previous_state)
 
-    save_state(vehicles, previous_state)
+    if failures:
+        LOGGER.warning("%s of %s alerts failed to send", failures, len(alerts))
+        return 1
+
     return 0
 
 

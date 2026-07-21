@@ -1,41 +1,31 @@
 name: Tesla Inventory Tracker
-
 on:
   schedule:
     - cron: "0 */4 * * *"
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
   group: tesla-inventory-tracker
   cancel-in-progress: false
-
 jobs:
   test-and-track:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-
       - name: Install dependencies
         run: pip install --requirement requirements-dev.txt
-
       - name: Lint
         run: ruff check tracker.py tests
-
       - name: Run tests
         run: pytest -q
-
       - name: Run Tesla tracker
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -44,14 +34,13 @@ jobs:
           TESLA_MAX_PRICE: "28000"
           TESLA_TRIM_KEYWORDS: "rear-wheel drive,rwd"
         run: python tracker.py
-
       - name: Persist inventory state
+        if: ${{ !cancelled() }}
         run: |
           if git diff --quiet -- inventory_state.json; then
             echo "No inventory state changes to commit."
             exit 0
           fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add inventory_state.json

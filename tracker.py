@@ -33,7 +33,7 @@ def check_tesla_inventory():
             vin = car.get("VIN", "")
 
             # Adjust these variables if you want to tighten criteria
-            if year == 2024 and price <= 26000:
+            if year == 2024 and price <= 28000:
                 cpo_link = f"https://tesla.com{vin}?titleStatus=used"
                 matched_cars.append({"price": price, "link": cpo_link, "vin": vin})
 
